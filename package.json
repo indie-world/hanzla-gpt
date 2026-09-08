@@ -1,0 +1,66 @@
+{
+  "name": "hanzla-gpt",
+  "version": "1.0.1",
+  "description": "Hanzla-GPT — local AI chat desktop app powered by Ollama",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "e2e": "electron scripts/e2e.js",
+    "icon": "python scripts/make_icon.py",
+    "dist": "electron-builder --win nsis --x64"
+  },
+  "author": "indieworldbb",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "dompurify": "^3.2.3",
+    "electron-updater": "^6.8.9",
+    "highlight.js": "^11.11.1",
+    "marked": "^15.0.4",
+    "ws": "^8.21.3"
+  },
+  "build": {
+    "appId": "com.indieworldbb.hanzlagpt",
+    "productName": "Hanzla-GPT",
+    "files": [
+      "src/**/*",
+      "vendor/**/*",
+      "build/icon.ico",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "extraResources": [
+      {
+        "from": "extension",
+        "to": "extension"
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "indie-world",
+        "repo": "hanzla-gpt"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Hanzla-GPT"
+    }
+  }
+}

@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src hgptmedia:; font-src 'self'; connect-src 'none';" />
+<title>Hanzla-GPT</title>
+<link rel="stylesheet" href="../vendor/hljs-github-dark.min.css" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ---------------- Sidebar ---------------- -->
+  <aside id="sidebar">
+    <div class="side-top">
+      <div class="brand">
+        <span class="brand-mark">H</span>
+        <span class="brand-name">Hanzla-GPT</span>
+      </div>
+      <div id="mode-tabs" class="mode-tabs">
+        <button class="mode-tab active" data-mode="chat" type="button">Chat</button>
+        <button class="mode-tab" data-mode="video" type="button">Video</button>
+      </div>
+      <button id="new-chat" class="btn-primary" type="button">
+        <span class="plus">+</span> New chat
+      </button>
+    </div>
+    <div id="chat-list" class="chat-list"></div>
+    <div class="side-bottom">
+      <button id="open-models" class="side-link" type="button">Models</button>
+      <button id="open-perf" class="side-link" type="button">Performance</button>
+      <button id="open-settings" class="side-link" type="button">Settings</button>
+      <div id="server-status" class="server-status"><span class="dot"></span><span class="txt">connecting…</span></div>
+    </div>
+  </aside>
+
+  <!-- ---------------- Chat column ---------------- -->
+  <main id="main">
+    <header id="topbar">
+      <div class="topbar-left">
+        <select id="model-select" title="Model used for this conversation"></select>
+        <span id="model-meta" class="model-meta"></span>
+      </div>
+      <div class="topbar-right">
+        <button id="toggle-private" class="ghost" type="button" title="Private chat: nothing is written to disk">Private</button>
+        <button id="toggle-code" class="ghost" type="button" title="Show or hide the code panel">Code</button>
+        <button id="export-chat" class="ghost" type="button" title="Export this conversation as Markdown">Export</button>
+        <button id="clear-chat" class="ghost" type="button" title="Delete this conversation">Delete</button>
+      </div>
+    </header>
+
+    <div id="private-banner" class="private-banner hidden">
+      <span class="pb-dot"></span>
+      <span>Private chat — this conversation is never written to disk and disappears when you close the app.</span>
+    </div>
+
+    <div id="messages" class="messages">
+      <div id="empty-state" class="empty">
+        <div class="empty-mark">H</div>
+        <h1>Hanzla-GPT</h1>
+        <p class="sub">Local AI running on your own machine. Nothing leaves this computer.</p>
+        <div class="suggestions">
+          <button class="suggest" type="button" data-p="Explain what a mutex is and show a short Python example.">Explain with code</button>
+          <button class="suggest" type="button" data-p="Write a Python script that watches a folder and logs any new files.">Write a script</button>
+          <button class="suggest" type="button" data-p="Rewrite this to be clearer and shorter:@@">Rewrite some text</button>
+          <button class="suggest" type="button" data-p="Give me 10 ideas for a mobile game about running a small bakery.">Brainstorm ideas</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="composer-wrap">
+      <div id="composer">
+        <textarea id="input" rows="1" placeholder="Send a message…  (Enter to send, Shift+Enter for newline)"></textarea>
+        <button id="attach-page" class="send ghost-send hidden" type="button" title="Attach the page open in Chrome">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 2c1.7 0 3.2 2.6 3.7 6H8.3C8.8 6.6 10.3 4 12 4zM4.3 11h3c0-1.4.1-2.8.4-4.1A8 8 0 004.3 11zm0 2a8 8 0 003.7 4.1c-.3-1.3-.4-2.7-.4-4.1h-3zm4 0h7.4c-.5 3.4-2 6-3.7 6s-3.2-2.6-3.7-6zm11.4 0h-3c0 1.4-.1 2.8-.4 4.1a8 8 0 003.4-4.1zm0-2a8 8 0 00-3.4-4.1c.3 1.3.4 2.7.4 4.1h3z" fill="currentColor"/></svg>
+        </button>
+        <button id="send" class="send" type="button" title="Send">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 12l16-8-6 8 6 8z" fill="currentColor"/></svg>
+        </button>
+        <button id="stop" class="send stop hidden" type="button" title="Stop generating">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+        </button>
+      </div>
+      <div id="footnote" class="footnote">Local model output can be wrong. Verify anything that matters.</div>
+    </div>
+  </main>
+
+
+  <!-- ---------------- Video view ---------------- -->
+  <main id="video-main" class="hidden">
+    <header id="video-topbar">
+      <div class="topbar-left">
+        <span class="vt-title">Text to video</span>
+        <span class="vt-model">LTX-Video 2B</span>
+      </div>
+      <div class="topbar-right">
+        <div id="engine-status" class="server-status"><span class="dot"></span><span class="txt">checking…</span></div>
+        <button id="engine-start" class="ghost" type="button">Start engine</button>
+      </div>
+    </header>
+
+    <div id="video-body" class="video-body">
+      <div class="video-form">
+        <label class="field">
+          <span class="lbl">Speed</span>
+          <select id="v-quality">
+            <option value="fast" selected>Fast — about 3× quicker, very slightly harsher colour</option>
+            <option value="best">Best quality — cleanest colour, takes 3× longer</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="lbl">Model</span>
+          <select id="v-engine">
+            <option value="wan22">WAN 2.2 5B — most realistic, accepts a reference photo</option>
+            <option value="wan">WAN 2.1 1.3B — faster, text only</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="lbl">Describe the shot</span>
+          <textarea id="v-prompt" rows="3" placeholder="A calm ocean wave rolling onto a sandy beach at sunset, golden light, cinematic"></textarea>
+        </label>
+        <div class="field" id="v-image-row">
+          <span class="lbl">Reference photo <span class="lbl-note">optional — the person or scene to animate</span></span>
+          <div class="v-dir-row">
+            <input id="v-image" class="text-input" type="text" readonly placeholder="No photo chosen — the video will be generated from text alone" />
+            <button id="v-image-pick" class="ghost" type="button">Choose…</button>
+            <button id="v-image-clear" class="ghost" type="button">Clear</button>
+          </div>
+          <span class="hint">Open models cannot generate a specific person from their name. Supplying a clear,
+            front-facing photo is the only way to keep a real person's likeness.</span>
+        </div>
+        <label class="field">
+          <span class="lbl">Avoid</span>
+          <textarea id="v-negative" rows="2">cartoon, anime, illustration, drawing, cel shaded, cgi, worst quality, blurry, jittery, distorted face, extra limbs, static, watermark</textarea>
+        </label>
+
+        <div class="v-grid">
+          <label class="field">
+            <span class="lbl">Size</span>
+            <select id="v-size">
+              <option value="320x192">320 × 192 — quick test, rough quality</option>
+              <option value="480x272" selected>480 × 272 — recommended</option>
+              <option value="640x384">640 × 384 — sharper, much slower</option>
+              <option value="832x480">832 × 480 — the size these models were trained at</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="lbl">Clip length <b id="v-len-val">1.0s</b></span>
+            <input id="v-length" type="range" min="17" max="97" step="4" value="25" />
+          </label>
+        </div>
+
+        <div id="v-estimate" class="v-estimate"></div>
+
+        <div class="v-actions">
+          <button id="v-generate" class="btn-primary" type="button">Generate video</button>
+          <button id="v-cancel" class="ghost hidden" type="button">Cancel</button>
+        </div>
+
+        <div id="v-progress" class="v-progress hidden">
+          <div class="bar"><div id="v-bar" class="bar-fill"></div></div>
+          <div id="v-progress-text" class="pull-text"></div>
+        </div>
+        <div id="v-error" class="v-error hidden"></div>
+      </div>
+
+      <div class="video-gallery">
+        <h3>Save location</h3>
+        <div class="v-dir-row">
+          <input id="v-dir" class="text-input" type="text" readonly />
+          <button id="v-dir-change" class="ghost" type="button">Change…</button>
+          <button id="v-dir-open" class="ghost" type="button">Open</button>
+        </div>
+        <div id="v-dir-note" class="hint" style="margin:6px 0 20px"></div>
+
+      </div>
+    </div>
+  </main>
+
+  <!-- ---------------- Code panel ---------------- -->
+  <section id="code-panel" class="collapsed">
+    <div class="cp-drag" id="cp-drag"></div>
+    <header class="cp-head">
+      <div class="cp-title">
+        <span id="cp-lang" class="cp-lang">Code</span>
+        <span id="cp-sub" class="cp-sub"></span>
+      </div>
+      <div class="cp-actions">
+        <button id="cp-copy" class="ghost" type="button">Copy</button>
+        <button id="cp-save" class="ghost" type="button">Save</button>
+        <button id="cp-close" class="ghost icon" type="button" title="Close panel">&times;</button>
+      </div>
+    </header>
+    <div id="cp-tabs" class="cp-tabs"></div>
+    <div id="cp-body" class="cp-body">
+      <div class="cp-empty">Code from the conversation shows up here.</div>
+    </div>
+  </section>
+</div>
+
+<!-- ---------------- Settings modal ---------------- -->
+<div id="settings-modal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head"><h2>Settings</h2><button class="modal-close" data-close="settings-modal" type="button">&times;</button></div>
+    <div class="modal-body">
+      <label class="field">
+        <span class="lbl">System prompt</span>
+        <textarea id="system-prompt" rows="5" placeholder="You are a helpful assistant."></textarea>
+      </label>
+      <label class="field">
+        <span class="lbl">Temperature <b id="temp-val">0.7</b></span>
+        <input id="temperature" type="range" min="0" max="1.5" step="0.05" value="0.7" />
+        <span class="hint">Lower is more focused and repeatable. Higher is more varied.</span>
+      </label>
+      <label class="field">
+        <span class="lbl">Context length <b id="ctx-val">2048</b> tokens</span>
+        <input id="num-ctx" type="range" min="2048" max="16384" step="1024" value="2048" />
+        <span class="hint" id="ctx-hint"></span>
+      </label>
+      <label class="field row">
+        <input id="show-thinking" type="checkbox" checked />
+        <span>Show the reasoning panel on models that think</span>
+      </label>
+      <div class="field">
+        <span class="hint" style="margin-top:0">
+          qwen3 always reasons before answering — that can't be switched off, only hidden.
+          For instant replies pick <b>llama3.2:3b</b>, which answers directly.
+        </span>
+      </div>
+      <h3 style="margin-top:24px">Browser</h3>
+      <div class="field">
+        <span class="lbl">Link a Chrome window</span>
+        <div class="v-dir-row" style="margin-bottom:4px">
+          <div id="ext-status" class="server-status" style="padding-left:0; flex:1">
+            <span class="dot"></span><span class="txt">checking…</span>
+          </div>
+          <button id="ext-reconnect" class="ghost" type="button">Reconnect</button>
+        </div>
+        <ol class="ext-steps">
+          <li>Press <b>Open extension folder</b> below.</li>
+          <li>In any Chrome window, go to <code>chrome://extensions</code>.</li>
+          <li>Turn on <b>Developer mode</b> (top right).</li>
+          <li>Click <b>Load unpacked</b> and choose the folder that opened.</li>
+        </ol>
+        <div class="v-dir-row">
+          <button id="ext-open-folder" class="ghost" type="button">Open extension folder</button>
+          <button id="ext-open-chrome-extensions" class="ghost" type="button">Open chrome://extensions</button>
+        </div>
+        <span class="hint">
+          Once loaded, that Chrome window is linked automatically — no need to reopen it, and
+          your other windows and tabs are completely untouched. Install it into as many profiles
+          as you like; whichever one you used most recently is the one Hanzla-GPT talks to.
+        </span>
+      </div>
+
+      <div id="paths-info" class="paths"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ---------------- Models modal ---------------- -->
+<div id="models-modal" class="modal hidden">
+  <div class="modal-box wide">
+    <div class="modal-head"><h2>Models</h2><button class="modal-close" data-close="models-modal" type="button">&times;</button></div>
+    <div class="modal-body">
+      <div class="pull-row">
+        <input id="pull-name" type="text" placeholder="Model name to download, e.g. qwen3:4b" />
+        <button id="pull-btn" class="btn-primary" type="button">Download</button>
+      </div>
+      <div id="pull-status" class="pull-status hidden">
+        <div class="bar"><div id="pull-bar" class="bar-fill"></div></div>
+        <div id="pull-text" class="pull-text"></div>
+      </div>
+      <div class="rec">
+        <h3>Recommended <span class="rec-note">Quadro P2000 · 3.3 GB usable VRAM · 32 GB RAM</span></h3>
+        <div id="rec-list" class="rec-list"></div>
+      </div>
+      <h3>Installed</h3>
+      <div id="installed-list" class="installed-list"></div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ---------------- Performance modal ---------------- -->
+<div id="perf-modal" class="modal hidden">
+  <div class="modal-box wide">
+    <div class="modal-head"><h2>Performance</h2><button class="modal-close" data-close="perf-modal" type="button">&times;</button></div>
+    <div class="modal-body">
+      <div id="sys-info" class="paths" style="margin-bottom:16px"></div>
+
+      <div class="note">
+        <b>Running two models at once does not add speed.</b> Tokens are generated one after
+        another, so a second loaded model only competes for the same VRAM and cores and makes
+        both slower. Real speed comes from keeping one model entirely on the GPU — or from a
+        mixture-of-experts model like <code>gpt-oss:20b</code>, which holds 20B parameters but
+        activates only ~3.6B per token.
+      </div>
+
+      <h3>Measured on this machine</h3>
+      <div class="pull-row">
+        <button id="bench-btn" class="btn-primary" type="button">Benchmark installed models</button>
+      </div>
+      <div id="bench-note" class="hint" style="margin:0 0 12px">
+        Runs a short fixed prompt through each model and reports real tokens/sec plus how much
+        of it fitted on the GPU. Takes a minute or two, and loads each model in turn.
+      </div>
+      <div id="bench-results" class="bench-results"></div>
+
+      <h3>Tuning</h3>
+      <label class="field">
+        <span class="lbl">CPU threads <b id="thread-val">auto</b></span>
+        <input id="num-thread" type="range" min="0" max="12" step="1" value="0" />
+        <span class="hint">0 = let Ollama decide. Your CPU has 6 physical cores; going above that
+          usually costs speed rather than adding it.</span>
+      </label>
+      <label class="field">
+        <span class="lbl">GPU layers <b id="gpu-val">auto</b></span>
+        <input id="num-gpu" type="range" min="-1" max="48" step="1" value="-1" />
+        <span class="hint">-1 = automatic. Lower this only if a model fails to load; raising it
+          past what 3.3 GB can hold makes Ollama fall back to CPU for the whole model.</span>
+      </label>
+    </div>
+  </div>
+</div>
+
+<script src="renderer.js"></script>
+</body>
+</html>

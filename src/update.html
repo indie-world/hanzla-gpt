@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';" />
+<title>Updating Hanzla-GPT</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    font: 14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+    background: #1b1b1f;
+    color: #ececf1;
+    user-select: none;
+    -webkit-app-region: drag;
+  }
+  .title { font-size: 17px; font-weight: 600; letter-spacing: .2px; }
+  .status { color: #a6a6b0; min-height: 20px; }
+  .track {
+    width: 320px;
+    height: 6px;
+    border-radius: 999px;
+    background: #303038;
+    overflow: hidden;
+  }
+  /* Determinate once real percentages arrive; until then it sweeps so the
+     window never looks frozen while the request is still being set up. */
+  .bar {
+    height: 100%;
+    width: 0%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #6c6cf0, #9a8cff);
+    transition: width .25s ease;
+  }
+  .track.indeterminate .bar {
+    width: 35%;
+    animation: sweep 1.1s ease-in-out infinite;
+  }
+  @keyframes sweep {
+    0%   { margin-left: -35%; }
+    100% { margin-left: 100%; }
+  }
+  .hint { font-size: 12px; color: #6f6f7b; }
+</style>
+</head>
+<body>
+  <div class="title">Updating Hanzla-GPT</div>
+  <div class="track indeterminate" id="track"><div class="bar" id="bar"></div></div>
+  <div class="status" id="status">Preparing download…</div>
+  <div class="hint" id="hint">The app will restart automatically when it is done.</div>
+</body>
+</html>
