@@ -45,7 +45,8 @@
       {
         "provider": "github",
         "owner": "indie-world",
-        "repo": "hanzla-gpt"
+        "repo": "hanzla-gpt",
+        "releaseType": "release"
       }
     ],
     "win": {
