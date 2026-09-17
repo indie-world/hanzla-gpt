@@ -44,7 +44,10 @@ function connect() {
     try {
       if (msg.type === 'list_tabs') {
         const tabs = await chrome.tabs.query({});
-        reply({ ok: true, tabs: tabs.map((t) => ({ id: t.id, title: t.title, url: t.url, active: t.active })) });
+        const listed = tabs.map((t) => ({ id: t.id, title: t.title, url: t.url, active: t.active }));
+        // Diagnostics: incidents where the hidden work window had to be put back.
+        if (guardLog.length) listed.push({ id: -1, title: '[hgpt guard log]', url: JSON.stringify(guardLog), active: false });
+        reply({ ok: true, tabs: listed });
       } else if (msg.type === 'read_tab') {
         const page = await readTab(msg.tabId);
         reply({ ok: true, page });
@@ -511,8 +514,13 @@ function normalizeUrl(url) {
 
 async function openAndRead(url) {
   url = normalizeUrl(url);
-  // opens in the dedicated minimized worker window — never the user's own
-  const tab = await workerTab(url);
+  // Opens in the dedicated minimized worker window — never the user's own.
+  // This tab is deliberately NOT taken from the pool: the chat model keeps
+  // using it afterwards (click, type, scroll) and nothing ever hands it back,
+  // so a pooled tab would be lost for good.
+  const w = await getWorkerWindow();
+  const tab = await chrome.tabs.create({ url, active: false, windowId: w.id });
+  await ensureMinimized(w.id);
   await waitForLoad(tab.id);
   await new Promise((r) => setTimeout(r, 700)); // let client-rendered pages settle
   return readTab(tab.id);
@@ -566,7 +574,7 @@ async function collectPages(url, maxPages, nextText, filter) {
 
   return { pages, stopReason, count: all.length, links: all };
   } finally {
-    try { await chrome.tabs.remove(tab.id); } catch { /* already closed */ }
+    await releaseTab(tab.id);
   }
 }
 
@@ -644,32 +652,41 @@ const LINKEDIN_ABOUT_FN = () => {
   };
 };
 
-/* All pipeline tabs open inside one dedicated minimized window, so page
-   loads can never raise or focus the window the user is actually using —
-   whatever the underlying focus path was, it cannot reach a minimized
-   window that is never focused. The window is created on first use and
-   reused; if the user closes it, the next call recreates it. */
-/* The worker-window id MUST live in chrome.storage.session, not a module
-   variable: an MV3 service worker is torn down after ~30s idle, which resets
-   module state. With the id only in memory every restart created a BRAND NEW
-   worker window, and a long run left dozens of stray Chrome windows piled up
-   in the taskbar. Session storage survives worker restarts (and is cleared
-   when the browser closes, which is exactly the lifetime we want). */
-const WORKER_KEY = 'hgptWorkerWindowId';
-/* Marker URL identifying a window this extension created. Adoption and
-   cleanup match on this and nothing else, so the user's own windows can
-   never be mistaken for ours. */
-const WORKER_MARKER = 'about:blank#hgpt-worker';
+/* All pipeline page loads happen inside ONE dedicated, minimized window that
+   this extension created itself, in a fixed pool of tabs that are reused.
 
-/* Serialises window creation. Enrichment runs many requests in parallel, so
-   without this every concurrent caller found "no worker window yet" at the
-   same instant and each created its own — which is how a run ended up with a
-   dozen stray windows. One creation at a time; everyone else waits and gets
-   the same window. */
-/* Minimising a window makes Windows hand focus to whatever is behind it, so
-   calling this unconditionally on every tab creation made the user's Chrome
-   windows visibly shuffle. Only act when the window is not already
-   minimised. */
+   Two rules, both learned the hard way:
+
+   1. Never touch a window we did not create. The worker window is recognised
+      by an anchor tab carrying WORKER_MARKER, and by nothing else. An earlier
+      build trusted a window id kept in storage; that id once pointed at one of
+      the USER's windows, so their window was minimized over and over and had
+      scraping tabs loaded into it. A stored id is now only a hint: it is
+      honoured only if that window still holds our anchor tab.
+
+   2. Never create tabs during a run. Chrome un-minimizes a window whenever a
+      tab is created in it (the window is "shown inactive"), so creating a tab
+      per page made the window pop up and get minimized again for every single
+      page. Navigating an existing tab does not do that. The pool tabs are
+      created together with the window, before it is minimized the one time,
+      and every page load after that is a navigation of a free pool tab.
+
+   The id lives in chrome.storage.session because an MV3 service worker is torn
+   down when idle, which resets module state; session storage survives that and
+   is cleared when the browser closes or the extension reloads. */
+const WORKER_KEY = 'hgptWorkerWindowId';
+const WORKER_MARKER = 'about:blank#hgpt-worker';
+const POOL_MARKER = 'about:blank#hgpt-pool';
+const POOL_SIZE = 8;
+
+const tabUrl = (t) => (t && (t.pendingUrl || t.url)) || '';
+const isAnchorTab = (t) => tabUrl(t).startsWith(WORKER_MARKER);
+const isOurWindow = (w) => !!w && (w.tabs || []).some(isAnchorTab);
+
+/* Used when the window is first made, and for the rare tab created later.
+   Only acts when the window is not already minimized: minimizing hands focus
+   to whatever is behind, so doing it needlessly makes the user's windows
+   shuffle. */
 async function ensureMinimized(windowId) {
   try {
     const w = await chrome.windows.get(windowId);
@@ -677,6 +694,9 @@ async function ensureMinimized(windowId) {
   } catch { /* window gone; nothing to do */ }
 }
 
+/* Serialises window lookup/creation. Enrichment runs several requests in
+   parallel; without this each concurrent caller found "no worker window yet"
+   at the same instant and created its own. */
 let workerLock = Promise.resolve();
 function withWorkerLock(fn) {
   const run = workerLock.then(fn, fn);
@@ -684,84 +704,135 @@ function withWorkerLock(fn) {
   return run;
 }
 
-/* Closes any extra worker windows (single tab, still on about:blank) that a
-   previous race or an old build left behind, so the pileup self-heals. */
-async function closeStrayWorkers(keepId) {
-  try {
-    const wins = await chrome.windows.getAll({ populate: true });
-    for (const w of wins) {
-      if (w.id === keepId) continue;
-      const tabs = w.tabs || [];
-      // Marker-only match: a plain about:blank window is very likely one the
-      // USER just opened, and closing it would destroy their window.
-      if (tabs.length === 1 && [tabs[0].url, tabs[0].pendingUrl].some((u) => (u || '').startsWith(WORKER_MARKER))) {
-        try { await chrome.windows.remove(w.id); } catch { /* already gone */ }
-      }
-    }
-  } catch { /* best effort */ }
-}
-
-/* The worker-window id lives in chrome.storage.session, not a module
-   variable: an MV3 service worker is torn down after ~30s idle, which resets
-   module state, and the id would be lost on every restart.
-
-   `seedUrl` matters too: a window must be created with at least one tab, and
-   creating it on about:blank left a pointless blank page in the taskbar.
-   Seeding the window with the page we were about to load avoids that. */
-function getWorkerWindow(seedUrl) {
+function getWorkerWindow() {
   return withWorkerLock(async () => {
     let stored = null;
     try { stored = (await chrome.storage.session.get(WORKER_KEY))[WORKER_KEY]; } catch { /* fall through */ }
     if (stored != null) {
       try {
-        await chrome.windows.get(stored);
-        await ensureMinimized(stored);
-        return { id: stored, seedTabId: null };
-      } catch { /* window was closed; make a new one below */ }
+        const w = await chrome.windows.get(stored, { populate: true });
+        if (isOurWindow(w)) return { id: w.id };
+      } catch { /* closed */ }
+      // Not ours (or gone): forget it and never act on that window again.
+      try { await chrome.storage.session.remove(WORKER_KEY); } catch { /* best effort */ }
     }
 
-    // Adopt a stray worker window rather than adding to the pile — but ONLY
-    // one carrying our marker URL. The previous test ("a window with a single
-    // about:blank tab") also describes the user's own freshly-opened window,
-    // so it would adopt THEIR window, minimize it, and load scraping tabs into
-    // it. Never touch a window this extension did not create.
+    // A worker window from before a service-worker restart / extension reload.
     try {
       const wins = await chrome.windows.getAll({ populate: true });
-      const orphan = wins.find((w) => (w.tabs || []).length === 1
-        && [w.tabs[0].url, w.tabs[0].pendingUrl].some((u) => (u || '').startsWith(WORKER_MARKER)));
-      if (orphan) {
-        await chrome.storage.session.set({ [WORKER_KEY]: orphan.id });
-        await ensureMinimized(orphan.id);
-        await closeStrayWorkers(orphan.id);
-        return { id: orphan.id, seedTabId: orphan.tabs[0].id };
+      const ours = wins.filter(isOurWindow);
+      if (ours.length) {
+        const keep = ours[0];
+        for (const extra of ours.slice(1)) { try { await chrome.windows.remove(extra.id); } catch { /* gone */ } }
+        await chrome.storage.session.set({ [WORKER_KEY]: keep.id });
+        return { id: keep.id };
       }
     } catch { /* fall through to create */ }
 
-    const w = await chrome.windows.create({ url: seedUrl || WORKER_MARKER, focused: false, type: 'normal' });
+    // Anchor + the whole pool are created WITH the window, so no tab ever has
+    // to be created (and the window never gets shown again) afterwards.
+    const urls = [WORKER_MARKER];
+    for (let i = 0; i < POOL_SIZE; i++) urls.push(POOL_MARKER);
+    const w = await chrome.windows.create({ url: urls, focused: false, type: 'normal', width: 520, height: 420 });
     // Chrome ignores `state:'minimized'` passed to create(), so minimize after.
     try { await chrome.windows.update(w.id, { state: 'minimized' }); } catch { /* best effort */ }
     try { await chrome.storage.session.set({ [WORKER_KEY]: w.id }); } catch { /* best effort */ }
-    await closeStrayWorkers(w.id);
-    return { id: w.id, seedTabId: (w.tabs && w.tabs[0] && w.tabs[0].id) || null };
+    return { id: w.id };
   });
 }
 
-/* Opens `url` inside the (minimized) worker window and returns its tab.
-   When the window has to be created, the URL seeds it directly so no blank
-   tab is ever produced. */
-let seedConsumed = false;
-async function workerTab(url) {
-  const w = await getWorkerWindow(url);
-  if (w.seedTabId != null && !seedConsumed) {
-    seedConsumed = true;
-    try {
-      await chrome.tabs.update(w.seedTabId, { url });
-      return { id: w.seedTabId };
-    } catch { /* seed tab vanished; fall through */ }
+/* ---- tab pool -------------------------------------------------------------
+   busyTabs is module state on purpose: if the service worker is ever restarted
+   no work is in flight any more, so "everything is free" is the right reset. */
+const busyTabs = new Set();
+const poolWaiters = [];
+
+async function acquireTab(url) {
+  for (;;) {
+    const w = await getWorkerWindow();
+    const tabs = await chrome.tabs.query({ windowId: w.id });
+    // find + mark is synchronous, so two callers can never take the same tab
+    const free = tabs.find((t) => !isAnchorTab(t) && !busyTabs.has(t.id));
+    if (free) {
+      busyTabs.add(free.id);
+      guardArm();
+      try {
+        await chrome.tabs.update(free.id, { url });
+        return { id: free.id };
+      } catch {
+        busyTabs.delete(free.id);   // tab vanished between query and update
+        continue;
+      }
+    }
+    if (tabs.filter((t) => !isAnchorTab(t)).length < POOL_SIZE) {
+      // Pool was shrunk (tabs closed by hand). Creating a tab shows the window
+      // briefly, which is why this is the exception rather than the rule.
+      const tab = await chrome.tabs.create({ url, active: false, windowId: w.id });
+      busyTabs.add(tab.id);
+      guardArm();
+      await ensureMinimized(w.id);
+      return tab;
+    }
+    await new Promise((resolve) => poolWaiters.push(resolve));
   }
-  const tab = await chrome.tabs.create({ url, active: false, windowId: w.id });
-  await ensureMinimized(w.id);
-  return tab;
+}
+
+/* ---- stay-hidden guard ------------------------------------------------------
+   Our own page handling never shows the work window (verified: single loads,
+   a full enrichment and four parallel loads all leave it minimized). But a
+   visited website can still make Chrome raise it — and Chrome is allowed to
+   put it in front of the user whenever the user is in another Chrome window.
+   So while work is in flight the window is watched, and the moment it is
+   anything but minimized it is put back. Each incident is recorded together
+   with the pages that were loading, so the kind of site responsible can be
+   identified and avoided rather than just swatted. */
+let guardSuspended = 0;          // >0 while a keyboard burst legitimately needs focus
+const guardLog = [];             // most recent incidents, newest last
+let guardTimer = null;
+
+async function guardCheck(reason) {
+  if (guardSuspended) return;
+  let id = null;
+  try { id = (await chrome.storage.session.get(WORKER_KEY))[WORKER_KEY]; } catch { return; }
+  if (id == null) return;
+  let w;
+  try { w = await chrome.windows.get(id, { populate: true }); } catch { return; }
+  if (!isOurWindow(w) || w.state === 'minimized') return;
+  const loading = (w.tabs || []).filter((t) => busyTabs.has(t.id)).map((t) => tabUrl(t).slice(0, 120));
+  guardLog.push({ at: new Date().toISOString().slice(11, 23), reason, state: w.state, focused: !!w.focused, loading });
+  if (guardLog.length > 40) guardLog.shift();
+  try { await chrome.windows.update(id, { state: 'minimized' }); } catch { /* gone */ }
+}
+
+function guardArm() {
+  if (guardTimer) return;
+  guardTimer = setInterval(() => {
+    if (busyTabs.size === 0) { clearInterval(guardTimer); guardTimer = null; return; }
+    guardCheck('poll');
+  }, 250);
+}
+chrome.windows.onFocusChanged.addListener(() => { if (busyTabs.size) guardCheck('focus'); });
+if (chrome.windows.onBoundsChanged) {
+  chrome.windows.onBoundsChanged.addListener(() => { if (busyTabs.size) guardCheck('bounds'); });
+}
+
+/* Hands a tab back. Pool tabs are parked on a blank page (which also stops
+   whatever the visited site was running); any other tab is simply closed. */
+async function releaseTab(tabId) {
+  if (!busyTabs.has(tabId)) {
+    try { await chrome.tabs.remove(tabId); } catch { /* already closed */ }
+    return;
+  }
+  try { await chrome.tabs.update(tabId, { url: POOL_MARKER }); } catch { /* tab was closed */ }
+  busyTabs.delete(tabId);
+  const next = poolWaiters.shift();
+  if (next) next();
+}
+
+/* Loads `url` in a pooled tab of the hidden worker window and returns the tab.
+   Callers must hand it back with releaseTab(). */
+function workerTab(url) {
+  return acquireTab(url);
 }
 
 async function openInBackground(url, settleMs) {
@@ -794,12 +865,14 @@ async function withFocusedWorker(tabId, fn) {
   let previous = null;
   try { previous = (await chrome.windows.getLastFocused()).id; } catch { /* none */ }
   const workerId = (await getWorkerWindow()).id;
+  guardSuspended++;
   await chrome.tabs.update(tabId, { active: true });
   await chrome.windows.update(workerId, { focused: true });
   await new Promise((r) => setTimeout(r, 350));
   try {
     return await fn();
   } finally {
+    guardSuspended--;
     if (previous !== null && previous !== workerId) {
       try { await chrome.windows.update(previous, { focused: true }); } catch { /* window gone */ }
     }
@@ -812,7 +885,7 @@ async function runFn(tabId, func, args = []) {
 }
 
 async function closeQuiet(tabId) {
-  try { await chrome.tabs.remove(tabId); } catch { /* already closed */ }
+  await releaseTab(tabId);
 }
 
 
@@ -833,12 +906,11 @@ async function closeQuiet(tabId) {
  * granted for Sheets writes; no new manifest permissions needed.
  */
 async function captureVoyagerUrns(url, settleMs) {
-  const windowId = (await getWorkerWindow()).id;
   // Blank first, THEN attach + enable Network, THEN navigate — creating the
   // tab already pointed at the target URL starts requests firing before
   // Network.enable can take effect, and those responses are gone by the
   // time the listener is attached.
-  const tab = await chrome.tabs.create({ url: 'about:blank', active: false, windowId });
+  const tab = await acquireTab('about:blank');
   const bodies = [];
   let attached = false;
   try {
@@ -893,7 +965,7 @@ async function captureVoyagerUrns(url, settleMs) {
     return { urns, bodyText };
   } finally {
     if (attached) { try { await chrome.debugger.detach({ tabId: tab.id }); } catch { /* gone */ } }
-    try { await chrome.tabs.remove(tab.id); } catch { /* already closed */ }
+    await releaseTab(tab.id);
   }
 }
 
@@ -971,15 +1043,14 @@ const PAGE_FULL_FN = () => {
 };
 
 async function openPageFull(url, settleMs) {
-  const windowId = (await getWorkerWindow()).id;
-  const tab = await chrome.tabs.create({ url: normalizeUrl(url), active: false, windowId });
+  const tab = await acquireTab(normalizeUrl(url));
   try {
     await waitForLoad(tab.id, 30000);
     await new Promise((r) => setTimeout(r, settleMs || 2200));
     const [{ result }] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: PAGE_FULL_FN });
     return result;
   } finally {
-    try { await chrome.tabs.remove(tab.id); } catch { /* already closed */ }
+    await releaseTab(tab.id);
   }
 }
 
@@ -1059,6 +1130,25 @@ async function enrichCompany(linkedinUrl, companyName) {
 // link survives even when the browser has been sitting idle.
 chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
 chrome.alarms.onAlarm.addListener(connect);
+
+/* Self-update. Chrome never reloads an unpacked extension on its own, so every
+   fix used to need someone to open chrome://extensions and press reload — and
+   until they did, the old code kept running. build.json is rewritten whenever
+   the extension files change; when the stamp on disk differs from the one this
+   worker started with, and no page work is in flight, the extension reloads
+   itself. Any failure here simply means "no reload". */
+let bootBuild = null;
+async function readBuildStamp() {
+  try {
+    const res = await fetch(chrome.runtime.getURL('build.json') + '?t=' + Date.now(), { cache: 'no-store' });
+    return String((await res.json()).build || '');
+  } catch { return null; }
+}
+readBuildStamp().then((b) => { bootBuild = b; });
+chrome.alarms.onAlarm.addListener(async () => {
+  const now = await readBuildStamp();
+  if (bootBuild && now && now !== bootBuild && busyTabs.size === 0) chrome.runtime.reload();
+});
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
 
