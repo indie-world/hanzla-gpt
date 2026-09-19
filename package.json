@@ -1,6 +1,6 @@
 {
   "name": "hanzla-gpt",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Hanzla-GPT — local AI chat desktop app powered by Ollama",
   "main": "src/main.js",
   "scripts": {
